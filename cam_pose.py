@@ -8,7 +8,7 @@ from kortex_api.autogen.messages import Base_pb2, BaseCyclic_pb2, Common_pb2
 from gen3_7dof.tool_box import TCPArguments, euler_to_rotation_matrix, quaternion_to_euler
 from gen3_7dof.utilities import DeviceConnection
 
-
+# test
 def getRotMtx(raw_pose):
     # Take raw pose from the kinova and convert to rotation matrix
     # Need to convert to radian
