@@ -8,7 +8,7 @@ from kortex_api.autogen.messages import Base_pb2, BaseCyclic_pb2, Common_pb2
 from gen3_7dof.tool_box import TCPArguments, euler_to_rotation_matrix, quaternion_to_euler
 from gen3_7dof.utilities import DeviceConnection
 
-# test3
+
 def getRotMtx(raw_pose):
     # Take raw pose from the kinova and convert to rotation matrix
     # Need to convert to radian
@@ -191,12 +191,12 @@ def generate_poses_bounds():
             R = rpy_to_camera_axes(roll, pitch, yaw)
 
             # Construct 3x4 camera-to-world matrix
-            T_cam_world = np.column_stack((R, [x, y, z],[1944,2592,3270]))
+            T_cam_world = np.column_stack((R, [x, y, z],[480,640,700]))
 
             # Flatten and append intrinsics & depth bounds
             pose_entry = np.concatenate([
-                T_cam_world.flatten(),  # 12 values (3x4 matrix)
-                [0.2, 5.0]  # 2 depth values
+                T_cam_world.flatten(),  # 15 values (3x5 matrix)
+                [0.05, 1.0]  # 2 depth values
             ])
 
             pose_list.append(pose_entry)
