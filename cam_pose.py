@@ -5,7 +5,7 @@ from kortex_api.autogen.client_stubs.BaseClientRpc import BaseClient
 from kortex_api.autogen.client_stubs.BaseCyclicClientRpc import BaseCyclicClient
 from kortex_api.autogen.client_stubs.ControlConfigClientRpc import ControlConfigClient
 from kortex_api.autogen.messages import Base_pb2, BaseCyclic_pb2, Common_pb2
-from gen3_7dof.tool_box import TCPArguments, euler_to_rotation_matrix
+from gen3_7dof.tool_box import TCPArguments, euler_to_rotation_matrix, quaternion_to_euler
 from gen3_7dof.utilities import DeviceConnection
 
 
@@ -29,23 +29,35 @@ def get_world_EE_HomoMtx(base):
     
     return T
 
+def get_EE_cam_HomoMtx():
+    q = [0,0,1,0] # x, y, z, w
+    p_EE_cam = np.array([0, -0.05, 0.154])
+
+    ori_rpy = quaternion_to_euler(q)
+    R_EE_cam = euler_to_rotation_matrix(ori_rpy[0], ori_rpy[1], ori_rpy[2])
+
+    T = np.eye(4)
+    T[:3,:3] = R_EE_cam
+    T[:3, 3] = p_EE_cam
+    return T
+
+
 
 # Compute the camera's homogeneous transformation matrix in the world frame
 def get_world_cam_HomoMtx(H_world_EE):
     # Camera's location w.r.t. the end effector in its local frame
-    P_cam_EE = np.array([0, -0.045, 0.055, 1])
 
     # Transform camera position into world frame
-    P_cam_world = H_world_EE @ P_cam_EE
-    camera_position = P_cam_world[:3]
 
     """
     We are also able to get roll, pitch, yaw by Thetax, Thetay, Thetaz
     Right now the results align perfectly with the numbers in the website (Kinova End Effector Thetax, Thetay, Thetaz)
     """
-
+    H_EE_cam = get_EE_cam_HomoMtx()
     # Camera orientation is the same as the end effector
-    R_world_cam = H_world_EE[:3, :3]
+    H_world_cam = H_world_EE @ H_EE_cam
+    R_world_cam = H_world_cam[:3, :3]
+    p_world_cam = H_world_cam[:3,3]
     
     # Convert rotation matrix to Euler angles
     yaw = np.arctan2(R_world_cam[1, 0], R_world_cam[0, 0])
@@ -53,9 +65,9 @@ def get_world_cam_HomoMtx(H_world_EE):
     roll = np.arctan2(R_world_cam[2, 1], R_world_cam[2, 2])
 
     return {
-        "camera_x": camera_position[0],
-        "camera_y": camera_position[1],
-        "camera_z": camera_position[2],
+        "camera_x": p_world_cam[0],
+        "camera_y": p_world_cam[1],
+        "camera_z": p_world_cam[2],
         "camera_roll": np.degrees(roll),
         "camera_pitch": np.degrees(pitch),
         "camera_yaw": np.degrees(yaw),
@@ -63,9 +75,11 @@ def get_world_cam_HomoMtx(H_world_EE):
 
 
 # Define image save directory
-base_dir = "data"
-image_subdir = "flower_new"  # Change this dynamically if needed
+base_dir = "/workspaces/isaac_ros-dev/src/IndoorFarming/proj_microscope_sim"
+image_subdir = "whitef"  # Change this dynamically if needed
+npy_subdir = "poses_bounds.npy"
 save_dir = os.path.join(base_dir, image_subdir)
+poses_bounds_path = os.path.join(save_dir,npy_subdir)
 os.makedirs(save_dir, exist_ok=True)  # ensure the directory exists
 
 # Define CSV file for saving pose + image info
@@ -116,6 +130,82 @@ def capture_image(pose):
     else:
         print("Failed to capture image.")
 
+def rpy_to_camera_axes(roll, pitch, yaw):
+    # Convert degrees to radians
+    roll, pitch, yaw = np.radians([roll, pitch, yaw])
+    
+    # Rotation matrices based on the camera's coordinate frame (X-right, Y-down, Z-forward)
+    R_z = np.array([
+        [np.cos(yaw), -np.sin(yaw), 0],  # Yaw: Rotates around Z (forward)
+        [np.sin(yaw),  np.cos(yaw), 0],
+        [0,            0,           1]
+    ])
+    
+    R_x = np.array([
+        [1, 0,           0          ],  # Pitch: Rotates around X (right)
+        [0, np.cos(pitch), -np.sin(pitch)],
+        [0, np.sin(pitch),  np.cos(pitch)]
+    ])
+    
+    R_y = np.array([
+        [ np.cos(roll), 0, np.sin(roll)],  # Roll: Rotates around Y (down)
+        [ 0,            1, 0           ],
+        [-np.sin(roll), 0, np.cos(roll)]
+    ])
+    
+    # Compute final rotation matrix (camera-to-world)
+    # Since RPY is applied in camera frame, order is Roll -> Pitch -> Yaw
+    R = R_z @ R_y @ R_x  # Camera-to-world
+    
+    # Extract camera axes (in the COLMAP [right, down, forward] convention)
+    right = R[:, 0]      # Right (X in camera frame)
+    down = R[:, 1]       # Down (Y in camera frame)
+    forward = R[:, 2]    # Forward (Z in camera frame)
+
+    # Convert to [down, right, backward] format for poses_bounds.npy
+    backward = -forward  # Because we need [down, right, backward]
+
+    R_final = np.column_stack([down, right, backward])
+
+    return R_final
+
+def generate_poses_bounds():
+    """ Reads the CSV file and generates poses_bounds.npy """
+    pose_list = []
+
+    if not os.path.exists(csv_filename):
+        print(f"CSV file {csv_filename} not found! No poses to process.")
+        return
+
+    with open(csv_filename, mode="r") as file:
+        reader = csv.DictReader(file)
+
+        for row in reader:
+            # Extract pose values
+            x, y, z = float(row["camera_x"]), float(row["camera_y"]), float(row["camera_z"])
+            roll, pitch, yaw = np.radians([float(row["camera_roll"]),
+                                           float(row["camera_pitch"]),
+                                           float(row["camera_yaw"])])
+
+            # Compute rotation matrix
+            R = rpy_to_camera_axes(roll, pitch, yaw)
+
+            # Construct 3x4 camera-to-world matrix
+            T_cam_world = np.column_stack((R, [x, y, z],[1944,2592,3270]))
+
+            # Flatten and append intrinsics & depth bounds
+            pose_entry = np.concatenate([
+                T_cam_world.flatten(),  # 12 values (3x4 matrix)
+                [0.2, 5.0]  # 2 depth values
+            ])
+
+            pose_list.append(pose_entry)
+
+    # Convert to Nx17 array and save
+    poses_bounds_array = np.array(pose_list)
+    np.save(poses_bounds_path, poses_bounds_array)
+
+    print(f"Saved poses_bounds.npy to {poses_bounds_path}")
 
 try:
     print("Move the robot arm to the desired position and press 'c' to capture an image.")
@@ -145,6 +235,7 @@ try:
 
             elif key == ord('z'):  # Press 'Q' to exit
                 print("Exiting...")
+                generate_poses_bounds()
                 break
 
             time.sleep(0.5)  # Adjust frequency of logging
